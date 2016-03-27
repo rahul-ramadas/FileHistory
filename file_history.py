@@ -6,6 +6,7 @@ import re
 import shutil
 import glob
 from textwrap import dedent
+import copy
 
 import sublime
 import sublime_plugin
@@ -47,8 +48,6 @@ class FileHistory(with_metaclass(Singleton)):
         self.__load_settings()
         self.__load_history()
         self.__clear_context()
-
-        self.delete_queue = []
 
         if self.DELETE_ALL_ON_STARTUP:
             invoke_async(lambda: self.delete_all_history(), 0)
@@ -258,7 +257,7 @@ class FileHistory(with_metaclass(Singleton)):
         self.__save_history()
 
     def get_history(self, current_project_only=True):
-        """Return the requested history (global or project-specific): closed files followed by opened files"""
+        """Return a copy of the requested history (global or project-specific): closed files followed by opened files"""
         # Make sure the history is loaded
         # TODO: If we have loaded history previously we should cache it and not access the file system again
         if len(self.history) == 0:
@@ -272,9 +271,7 @@ class FileHistory(with_metaclass(Singleton)):
 
         # Return the list of closed and opened files
         if self.project_name in self.history:
-            # Note we don't copy the list because deletions will be queued until
-            # after the caller is done with the list
-            return self.history[self.project_name]
+            return copy.deepcopy(self.history[self.project_name])
         else:
             self.debug('WARN: Project %s could not be found in the file history list - returning an empty history list' % (self.project_name))
             return []
@@ -334,26 +331,6 @@ class FileHistory(with_metaclass(Singleton)):
                 self.__remove(project_name, filename)
                 self.__remove('global', filename)
 
-            self.__save_history()
-
-    def __queue_delete(self, filename, project_name):
-        if self.REMOVE_NON_EXISTENT_FILES:
-            self.debug('Queuing file for deletion: ' + filename)
-            self.delete_queue.append({'project': project_name, 'filename': filename})
-
-    def delete_pending(self):
-        # Delete any of the files waiting in the 'delete_queue'.  We queue the file to be deleted
-        # since deleting them immediately will make the quick panel inconsistent with the history.
-        trigger_save = False
-        while len(self.delete_queue) > 0:
-            item = self.delete_queue.pop()
-            for key in ('global', item['project']):
-                self.debug('File no longer exists: removing it from the "%s" history: %s' % (key, item['filename']))
-                self.__remove(key, item['filename'])
-                trigger_save = True
-
-        # only save the history if we changed it above
-        if trigger_save:
             self.__save_history()
 
     def __add_to_history(self, project_name, history_type, filename, group, index):
@@ -492,7 +469,8 @@ class FileHistory(with_metaclass(Singleton)):
         else:
             # Close the last preview and remove the non-existent file from the history
             self.__close_preview(window)
-            self.__queue_delete(filepath, self.get_current_project_key())
+            self.__remove(self.get_current_project_key(), filepath)
+            self.__save_history()
 
     def __open_preview(self, window, filepath):
         self.current_view = window.open_file(filepath, sublime.TRANSIENT)
@@ -762,9 +740,6 @@ class OpenRecentlyClosedFileCommand(sublime_plugin.WindowCommand):
             FileHistory().reset(self.window)
 
         self.history_list = {}
-
-        # Perform any pending deletes
-        FileHistory().delete_pending()
 
 
 class OpenRecentlyCloseFileCommandContextHandler(sublime_plugin.EventListener):
